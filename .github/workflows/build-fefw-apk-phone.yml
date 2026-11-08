@@ -14,21 +14,14 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 240
     steps:
-      - name: This repository (the patch)
+      - name: Your repository (BananaNative plus fefw.patch in its top folder)
         uses: actions/checkout@v4
         with:
-          path: mine
-
-      - name: Banana Native at the commit the patch was made for
-        uses: actions/checkout@v4
-        with:
-          repository: moceure/BananaNative
-          ref: 5666bf0cc475b381d926c975b0c45f26f1b9f575
           path: bn
 
       - name: Apply the patch
         working-directory: bn
-        run: git apply --whitespace=nowarn ../mine/fefw.patch
+        run: git apply --whitespace=nowarn fefw.patch
 
       - uses: actions/setup-java@v4
         with:
