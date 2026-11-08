@@ -48,7 +48,7 @@ jobs:
         working-directory: bn/android/app
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          ./gradlew -PnxGames=04007EF01F8AE000 -PnxApp=fefw -PnxPackStage="$RUNNER_TEMP/work/stage" apk --stacktrace
+         sh ./gradlew -PnxGames=04007EF01F8AE000 -PnxApp=fefw -PnxPackStage="$RUNNER_TEMP/work/stage" apk --stacktrace
 
       - name: The APK
         uses: actions/upload-artifact@v4
