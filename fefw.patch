@@ -1,9 +1,9 @@
 diff --git a/dm/games/04007EF01F8AE000/README.md b/dm/games/04007EF01F8AE000/README.md
 new file mode 100644
-index 0000000..55e1244
+index 0000000..350df7b
 --- /dev/null
 +++ b/dm/games/04007EF01F8AE000/README.md
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,31 @@
 +# Fire Emblem Fortune's Weave (`04007EF01F8AE000`)
 +
 +A Switch 2 game: v131072 (display version 2.0.0), SDK 22.2.0 built for the Switch 2 (`Ounce`), NVN2. Intelligent Systems' engine on NintendoWare, a deferred renderer. Modules `main`, `subsdk2` (the movie library) and `sdk`; `subsdk0` (DLSS) and `subsdk1` (CUDA) are not loaded, because `main` imports nothing from them. **In bring-up on Android: nothing here has run on a phone yet.** On the Mac and the iPhone it is the upstream nxnative profile of the same name.
@@ -17,11 +17,15 @@ index 0000000..55e1244
 +
 +## Movies
 +
-+The movies are AV1 in WebM at 2560x1440, decoded through `nn::codec` into native images by this tree's own `hle_codec_video.c` and `hle_movie_av1.c` (dav1d). Not run on a phone with this game.
++The movies are AV1 in WebM at 2560x1440, decoded through `nn::codec` into native images by this tree's own `hle_codec_video.c` and `hle_movie_av1.c` (dav1d). On the Odin 3 the first movie ran at about 20 fps on dav1d's default 4 threads; Android now defaults to 6 (`DM_DAV1D_THREADS`). Open.
 +
 +## Operation mode
 +
 +`op_mode handheld`. The first Odin 3 log (docked, the default) showed a 3840x2160 swap chain and a 3840x2160 DLSS network of method 2 (input 1/1, DLAA): the game rendered at 4K and relied on DLSS for its anti-aliasing, so the picture was aliased and its 3D shook with the camera's sub-pixel jitter, which a plain scale does not remove. Handheld, the game makes its 1280x720 network instead. Not yet run on a phone (open).
++
++## Saved view formats
++
++The Vulkan replay learns which image formats the game mixes and keeps them in `vk_view_formats.txt`. On the Odin 3 (Turnip), the first run was clean and every later run, which reads that file, flashed noise from its first frame; deleting the file (and the pipeline cache files) made the next run clean. `vka_tex.c` `vl_enabled` therefore turns the learning off for this game (`DM_VK_VIEW_LEARN=1` turns it back on). Cause not found (open).
 +
 +## Memory
 +
@@ -29,7 +33,7 @@ index 0000000..55e1244
 +
 +## Open
 +
-+- **DLSS.** The game upscales every presented frame (1024x576 to 2048x1152) through NVN's own `nvnDlss*` entry points (`gfxa::TaskDLSS`: `main+0x1913b48` makes the network, `main+0xb70f00` evaluates it). `hle_nvn.c` answers them and records each evaluation as a linear-filtered copy of the colour input into the output, which the Vulkan replay does as a blit. That is upstream's plain scale (`DM_DLSS_TEMPORAL=0`): no temporal accumulation, so a softer picture than the console's or than upstream's MetalFX path. A temporal upscaler on Vulkan is open. The blit needs the output's format to be blittable on the phone's driver; a `[RED]` line names it when not.
++- **DLSS.** The game upscales every presented frame (1024x576 to 2048x1152) through NVN's own `nvnDlss*` entry points (`gfxa::TaskDLSS`: `main+0x1913b48` makes the network, `main+0xb70f00` evaluates it). `hle_nvn.c` answers them and records each evaluation as a linear-filtered copy of the colour input into the output, which the Vulkan replay does as a blit. That is upstream's plain scale (`DM_DLSS_TEMPORAL=0`): no temporal accumulation, so a softer picture than the console's or than upstream's MetalFX path. A temporal upscaler on Vulkan is open. The game's camera jitter (a sub-pixel shake every frame, which DLSS removes) made the 3D shake on the Odin 3 under the plain scale, so `hle_nvn.c` shifts the picture back by the jitter the game passes, in whole output pixels (a second, shifted blit over the first): `DM_DLSS_JITTER="<x> <y>"` gives the signs (default `1 1`; the game's convention is not known, so try `-1 -1`, `1 -1`, `-1 1`; `0 0` = the plain scale). The remaining error is up to half an output pixel. The edges stay aliased: nothing here replaces DLSS's anti-aliasing. The blit needs the output's format to be blittable on the phone's driver; a `[RED]` line names it when not.
 +- Everything on a phone: boot, the shader library for the Vulkan replay (`pack_android.py` builds it from the dump), the movies, frame rate and heat.
 diff --git a/dm/games/04007EF01F8AE000/bf_want.tsv b/dm/games/04007EF01F8AE000/bf_want.tsv
 new file mode 100644
@@ -30650,10 +30654,10 @@ index 8097dfe..0e1200d 100644
  | [Ghost Trick: Phantom Detective](010029B018432000/README.md) | `010029B018432000` | 1.0.0 (base) | 13.3.0 | Capcom's RE Engine, Wwise | NVN |
  | [Hades](0100535012974000/README.md) | `0100535012974000` | 1.0.38233 | 9.3.0 | Supergiant Games' engine (The Forge) | Vulkan |
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
-index 7f9c30c..d86d852 100644
+index 7f9c30c..20d0594 100644
 --- a/dm/gfx/nvn/hle_nvn.c
 +++ b/dm/gfx/nvn/hle_nvn.c
-@@ -2693,6 +2693,85 @@ NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const vo
+@@ -2693,6 +2693,111 @@ NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const vo
  // A queue NVN2 ties to a primary queue (Donkey Kong Bananza's second queue): the host executes every queue's submits in order on its one Metal queue, so the tie needs no work
  NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *primary) { (void)b; (void)primary; }
  
@@ -30723,22 +30727,108 @@ index 7f9c30c..d86d852 100644
 +NVN_NOPROTO(nvnDlssParametersSetEvaluationIndex, void, dlss_params_t *p, int i) { (void)p; (void)i; }   // which of the network's frames in flight: the replay runs them in order
 +// The evaluation, as the colour input's subrectangle (iw x ih at its base; the whole texture when the game gave no size) scaled into the output (the network's output size at the output's base) with a linear
 +// filter: a texture copy the replay already does as a blit (vka_exec.c copy_t2t)
-+NVN_NOPROTO(nvnCommandBufferEvaluateDlss, void, NVNcommandBuffer *c, const dlss_net_t *n, const dlss_params_t *p) {
-+    const NVNtexture *s = p->tex[DLSS_COLOR], *d = p->tex[DLSS_OUTPUT];
-+    if (!s || !d) { ONCE_LOG("[RED] DLSS evaluated without a colour input or an output texture: nothing is drawn"); return; }
++// One filtered copy of the colour input into the output (a blit in the replay): the op with its textures; the caller sets the regions. NULL: a texture the host never made (the replay would skip it too)
++static p_copy_t2t *dlss_op(NVNcommandBuffer *c, const NVNtexture *s, const NVNtexture *d) {
 +    p_copy_t2t *o = REC_SNAP(c, OP_COPY_T2T, p_copy_t2t, 2);
 +    o->src = tex_snap(o, SNAP_OFF(p_copy_t2t), 0, s, (uint64_t)__builtin_return_address(0)); o->dst = tex_snap(o, SNAP_OFF(p_copy_t2t), 1, d, (uint64_t)__builtin_return_address(0));
 +    copy_view(&o->sv, &o->has_sv, NULL); copy_view(&o->dv, &o->has_dv, NULL);
-+    if (!o->src || !o->dst) return;   // a texture the host never made: the replay would skip the copy too
-+    int iw = p->iw > 0 ? p->iw : (int)o->src->d.width, ih = p->ih > 0 ? p->ih : (int)o->src->d.height, ow = n->w > 0 ? n->w : (int)o->dst->d.width, oh = n->h > 0 ? n->h : (int)o->dst->d.height;
-+    o->sr = (NVNcopyRegion){p->base[DLSS_COLOR][0], p->base[DLSS_COLOR][1], 0, iw, ih, 1};
-+    o->dr = (NVNcopyRegion){p->base[DLSS_OUTPUT][0], p->base[DLSS_OUTPUT][1], 0, ow, oh, 1};
 +    o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
++    return o->src && o->dst ? o : NULL;
++}
++// The game shakes its camera by a sub-pixel jitter every frame (DLSS's input; the jitter offset in input pixels) and DLSS takes the shake out again. A plain scale leaves it in: the 3D
++// shakes. So the picture is shifted back by the jitter, in whole output pixels (a blit takes whole pixels only): the whole input stretched as before for the border, then its inner
++// part (one input pixel cropped on each side) stretched to a place moved by the shift, which moves everything inside it by exactly that shift. DM_DLSS_JITTER="<x> <y>" gives the
++// signs (1 or -1; 0 = no shift on that axis), as the game's convention for the jitter is not known: "0 0" is the plain scale. Default "1 1": the jitter is how far the camera moved the
++// picture right and down in input pixels
++static void dlss_jitter_signs(int *kx, int *ky) {
++    static int k[2] = {1, 1}, done;
++    if (!done) { done = 1; const char *e = getenv("DM_DLSS_JITTER"); if (e && *e) { int a, b; if (sscanf(e, "%d %d", &a, &b) == 2) { k[0] = a; k[1] = b; } }
++        LOG("[nvn] DLSS jitter cancelled with signs %d %d (DM_DLSS_JITTER=\"x y\"; 0 0 = a plain scale)", k[0], k[1]); }
++    *kx = k[0]; *ky = k[1];
++}
++NVN_NOPROTO(nvnCommandBufferEvaluateDlss, void, NVNcommandBuffer *c, const dlss_net_t *n, const dlss_params_t *p) {
++    const NVNtexture *s = p->tex[DLSS_COLOR], *d = p->tex[DLSS_OUTPUT];
++    if (!s || !d) { ONCE_LOG("[RED] DLSS evaluated without a colour input or an output texture: nothing is drawn"); return; }
++    p_copy_t2t *o = dlss_op(c, s, d);
++    if (!o) return;
++    int iw = p->iw > 0 ? p->iw : (int)o->src->d.width, ih = p->ih > 0 ? p->ih : (int)o->src->d.height, ow = n->w > 0 ? n->w : (int)o->dst->d.width, oh = n->h > 0 ? n->h : (int)o->dst->d.height;
++    int bx = p->base[DLSS_COLOR][0], by = p->base[DLSS_COLOR][1], dbx = p->base[DLSS_OUTPUT][0], dby = p->base[DLSS_OUTPUT][1];
++    o->sr = (NVNcopyRegion){bx, by, 0, iw, ih, 1};
++    o->dr = (NVNcopyRegion){dbx, dby, 0, ow, oh, 1};
++    int kx, ky; dlss_jitter_signs(&kx, &ky);
++    if (iw < 3 || ih < 3 || ow % iw || oh % ih || (!kx && !ky)) return;   // a whole-number scale only: the shifted copy lands on whole output pixels
++    int sx = ow / iw, sy = oh / ih;
++    int dx = (int)lroundf(-kx * p->jitter[0] * (float)sx), dy = (int)lroundf(-ky * p->jitter[1] * (float)sy);
++    dx = dx < -sx ? -sx : dx > sx ? sx : dx; dy = dy < -sy ? -sy : dy > sy ? sy : dy;
++    if (!dx && !dy) return;
++    if (!(o = dlss_op(c, s, d))) return;
++    o->sr = (NVNcopyRegion){bx + 1, by + 1, 0, iw - 2, ih - 2, 1};
++    o->dr = (NVNcopyRegion){dbx + sx + dx, dby + sy + dy, 0, (iw - 2) * sx, (ih - 2) * sy, 1};
 +}
 +
  // ---------- Native images ----------
  // A decoded video picture as a texture (nn::gs::NativeImageHandle → nvnNativeImage → nvnTextureInitializeFromNativeImage; Fire Emblem Fortune's Weave's movies, main+0x1900da8, RGBA8). These are not in
  // the proc table: the game imports them by name from the sdk. Upstream's handle comes from nn::codec's pool (hle_codec_video.c, not on this branch: dm_native_image is the weak stub below), which keeps the picture as RGBA in the game's pool memory: a linear texture
+diff --git a/dm/gfx/vk_android/vka_tex.c b/dm/gfx/vk_android/vka_tex.c
+index e0189eb..ab4d18c 100644
+--- a/dm/gfx/vk_android/vka_tex.c
++++ b/dm/gfx/vk_android/vka_tex.c
+@@ -17,6 +17,7 @@
+ #include <string.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
++#include "game_profile.h"   // DM_GAME_ID (vl_enabled)
+ #include "vka_zshare.h"
+ #include "vka_gml.h"
+ #include "vka_texlimit.h"
+@@ -313,6 +314,9 @@ static int same_shape(const vka_img *a, const tex_t *t, const vka_fmt *f, int le
+ // compatible with the image's, and a bad pair in the file (an older build's, a hand edit) would break that rule on every image of its format in every run. The file is
+ // written whole (a temporary file renamed over it), so a run that ends while writing leaves the old one. DM_VK_VIEW_LEARN=0: nothing learned or read (views in the image's
+ // own format, as before)
++// Whether view formats are learned and read (DM_VK_VIEW_LEARN, default on). Off for Fire Emblem Fortune's Weave: its second run, which reads the pairs the first learned, flashed noise from its first frame
++// on the Odin 3 (Turnip), and a run with the file deleted, or without learning, did not
++static int vl_enabled(void) { return VKA_ENV("DM_VK_VIEW_LEARN", strcmp(DM_GAME_ID, "04007EF01F8AE000") != 0); }
+ typedef struct { VkFormat a, b; uint32_t w, h; } vlearn;
+ enum { NVL = 64 };
+ static vlearn g_vl[NVL]; static int g_nvl, g_vl_loaded; static char g_vl_path[1024]; static pthread_mutex_t g_vlmu = PTHREAD_MUTEX_INITIALIZER;
+@@ -358,13 +362,13 @@ static void vl_load(void) {   // caller holds g_vlmu
+ // its RGBA8, R11G11B10 and RGB9E5 targets as r32ui images for atomics and packed writes), and dynamic resolution gives the target a new size every few frames: a pair keyed
+ // by the size missed at each one, and the pass read and wrote through the target's own format (or nothing)
+ static int vl_formats(VkFormat a, uint32_t w, uint32_t h, int img, VkFormat *out, int max) {   // caller holds g_vlmu
+-    if (!VKA_ENV("DM_VK_VIEW_LEARN", 1)) return 0;
++    if (!vl_enabled()) return 0;
+     vl_load(); int n = 0;
+     for (int i = 0; i < g_nvl && n < max; i++) if (g_vl[i].a == a && ((g_vl[i].w == w && g_vl[i].h == h) || (img && !g_vl[i].w && !g_vl[i].h))) { int dup = 0; for (int k = 0; k < n; k++) dup |= out[k] == g_vl[i].b; if (!dup) out[n++] = g_vl[i].b; }   // (vl_learn and vl_load keep at most VL_PER_IMAGE a format and size)
+     return n;
+ }
+ static int vl_learn(VkFormat a, VkFormat b, uint32_t w, uint32_t h) {   // caller holds g_vlmu; 1 = new
+-    if (!VKA_ENV("DM_VK_VIEW_LEARN", 1) || !vl_pair_ok(a, b)) return 0;
++    if (!vl_enabled() || !vl_pair_ok(a, b)) return 0;
+     vl_load();
+     int same = 0;
+     for (int i = 0; i < g_nvl; i++) { if (g_vl[i].a == a && g_vl[i].b == b && g_vl[i].w == w && g_vl[i].h == h) return 0; same += g_vl[i].a == a && g_vl[i].w == w && g_vl[i].h == h; }
+@@ -1527,7 +1531,7 @@ VkImageView vka_view(vka_img *im, VkFormat fmt, VkImageViewType type, VkImageAsp
+             while (k < ns && !(seen[k].a == im->f.vk && seen[k].b == fmt)) k++;
+             if (k == ns && ns < 32) { seen[ns].a = im->f.vk; seen[ns++].b = fmt;
+                 VRED("image VkFormat %d (NVN %#x, %ux%u) asked for a view as VkFormat %d, which its format list does not have: viewed in its own format%s", im->f.vk, im->d.format, im->w, im->h, fmt,
+-                     VKA_ENV("DM_VK_VIEW_LEARN", 1) ? " (an image made before the pair was learned, or the table is full)" : " (DM_VK_VIEW_LEARN=0)"); } }
++                     vl_enabled() ? " (an image made before the pair was learned, or the table is full)" : " (DM_VK_VIEW_LEARN=0)"); } }
+         if (t_view_strict) { pthread_mutex_unlock(&g_tmu); return VK_NULL_HANDLE; }
+         fmt = im->f.vk;
+     }
+diff --git a/dm/host/hle_movie_av1.c b/dm/host/hle_movie_av1.c
+index 1bb4f4a..f04e772 100644
+--- a/dm/host/hle_movie_av1.c
++++ b/dm/host/hle_movie_av1.c
+@@ -200,7 +200,7 @@ static int decode_dav1d(mav1 *a, const uint8_t *data, size_t n, mav1_picture *ou
+         const char *env_th = getenv("DM_DAV1D_THREADS");
+         if (env_th && *env_th) nth = atoi(env_th);
+         else { long ncpu = sysconf(_SC_NPROCESSORS_ONLN); if (ncpu >= 8) nth = 8; else if (ncpu >= 4) nth = 4; }
+-        st.n_threads = nth > 0 ? nth : 4;
++        st.n_threads = nth > 0 ? nth : PLAT_APPLE ? 4 : 6;   // a phone's 1440p AV1 movies (Fire Emblem Fortune's Weave) ran at about 20 fps on 4 threads
+         const char *env_del = getenv("DM_DAV1D_FRAME_DELAY");
+         if (env_del && *env_del) st.max_frame_delay = atoi(env_del);
+         else st.max_frame_delay = 0;   // 0 = automatic frame multithreading across CPU cores
 diff --git a/docs/agents/game-patches.md b/docs/agents/game-patches.md
 index eefb193..37d4956 100644
 --- a/docs/agents/game-patches.md
