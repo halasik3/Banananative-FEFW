@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   apk:
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 240
     steps:
       - name: This repository (the patch)
