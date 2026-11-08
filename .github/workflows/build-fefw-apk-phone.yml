@@ -1,3 +1,6 @@
+# Builds the Banana Native app with Fire Emblem: Fortune's Weave added AND the real on-phone packer ("Prepare" works on the phone, Windows PC not needed).
+# Run it from the Actions tab: "Build Fortune's Weave APK (on-phone Prepare)" > Run workflow. The APK is under "Artifacts" on the run's page.
+# It needs a Mac machine (GitHub provides one) because the packer's build script is written for macOS. This takes a long time (an hour or more).
 name: Build Fortune's Weave APK (on-phone Prepare)
 
 on:
@@ -11,7 +14,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 240
     steps:
-      - name: Your repository
+      - name: Your repository (BananaNative plus fefw.patch in its top folder)
         uses: actions/checkout@v4
         with:
           path: bn
@@ -37,9 +40,16 @@ jobs:
           "$SDKM" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
-      - name: Build the on-phone packer
+      - name: Build the on-phone packer (Python, translator, SPIR-V tools, zbic)
         working-directory: bn
         run: zsh android/ondevice/build.sh "$RUNNER_TEMP/work" all
+
+      - name: Use your fixed signing key (so a new APK installs over the old one)
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then echo "$DEBUG_KEYSTORE_B64" | base64 --decode > ~/.android/debug.keystore; echo "using the fixed key"; else echo "no DEBUG_KEYSTORE_B64 secret: this APK gets a new random key"; fi
 
       - name: Build the APK
         working-directory: bn/android/app
