@@ -1,6 +1,3 @@
-# Builds the Banana Native app with Fire Emblem: Fortune's Weave added AND the real on-phone packer ("Prepare" works on the phone, Windows PC not needed).
-# Run it from the Actions tab: "Build Fortune's Weave APK (on-phone Prepare)" > Run workflow. The APK is under "Artifacts" on the run's page.
-# It needs a Mac machine (GitHub provides one) because the packer's build script is written for macOS. This takes a long time (an hour or more).
 name: Build Fortune's Weave APK (on-phone Prepare)
 
 on:
@@ -14,7 +11,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 240
     steps:
-      - name: Your repository (BananaNative plus fefw.patch in its top folder)
+      - name: Your repository
         uses: actions/checkout@v4
         with:
           path: bn
@@ -40,7 +37,7 @@ jobs:
           "$SDKM" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
-      - name: Build the on-phone packer (Python, translator, SPIR-V tools, zbic)
+      - name: Build the on-phone packer
         working-directory: bn
         run: zsh android/ondevice/build.sh "$RUNNER_TEMP/work" all
 
@@ -48,7 +45,7 @@ jobs:
         working-directory: bn/android/app
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-         sh ./gradlew -PnxGames=04007EF01F8AE000 -PnxApp=fefw -PnxPackStage="$RUNNER_TEMP/work/stage" apk --stacktrace
+          sh ./gradlew -PnxGames=04007EF01F8AE000 -PnxApp=fefw -PnxPackStage="$RUNNER_TEMP/work/stage" apk --stacktrace
 
       - name: The APK
         uses: actions/upload-artifact@v4
