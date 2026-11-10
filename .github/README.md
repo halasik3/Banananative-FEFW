@@ -8,6 +8,10 @@ moceure/BananaNative
 All i really did was type stuff to a LLM and test for changes.
 
 Feel free to make use of this repo in all possible ways, maybe put my name somewhere in a corner if your feeling generous
+
+Original Bananative README below:
+
+
 <p align="center"><img src="../android/images/logo.svg" alt="Banana Native logo" width="128"></p>
 
 # Banana Native
