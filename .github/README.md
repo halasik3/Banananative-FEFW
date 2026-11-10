@@ -1,5 +1,14 @@
 This repo is a complete amateur attempt to play Fortune's Weave before others did it properly. 
 If you somehow got here, then good luck to all of us. Fingers crossed.
+
+All actual credit goes to
+seedds/nxnative
+and
+moceure/BananaNative
+
+All i really did was type stuff to a LLM and test for changes.
+
+Feel free to make use of this repo in all possible ways, maybe put my name somewhere in a corner if your feeling generous
 <p align="center"><img src="../android/images/logo.svg" alt="Banana Native logo" width="128"></p>
 
 # Banana Native
