@@ -1,5 +1,4 @@
-This repo is a complete amateur attempt to play Fortune's Weave before others did it properly. 
-If you somehow got here, then good luck to all of us. Fingers crossed.
+This repo is a complete amateur attempt to play Fortune's Weave on Android before others did it properly.
 
 All actual credit goes to
 seedds/nxnative
