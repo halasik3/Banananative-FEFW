@@ -1,5 +1,5 @@
 # Builds the Banana Native app with Fire Emblem: Fortune's Weave added AND the real on-phone packer ("Prepare" works on the phone, Windows PC not needed).
-# Run it from the Actions tab: "Build Fortune's Weave APK (on-phone Prepare)" > Run workflow. The APK is under "Artifacts" on the run's page.
+# Run it from the Actions tab: "Build Fortune's Weave APK (on-phone Prepare)" > Run workflow. The APK (banana-native-fefw-<commit>.apk, not zipped) is under "Artifacts" on the run's page.
 # It needs a Mac machine (GitHub provides one) because the packer's build script is written for macOS. This takes a long time (an hour or more).
 name: Build Fortune's Weave APK (on-phone Prepare)
 
@@ -57,11 +57,18 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           sh ./gradlew -PnxGames=04007EF01F8AE000 -PnxApp=fefw -PnxPackStage="$RUNNER_TEMP/work/stage" apk --stacktrace
 
-      - name: The APK
-        uses: actions/upload-artifact@v4
+      - name: Name the APK with the commit
+        run: |
+          set -e
+          n=$(ls bn/android/app/out/*.apk | wc -l)
+          [ "$n" = 1 ] || { echo "expected one APK, found $n"; ls bn/android/app/out; exit 1; }
+          cp bn/android/app/out/*.apk "banana-native-fefw-${GITHUB_SHA::7}.apk"
+
+      - name: The APK (a plain file, not a zip)
+        uses: actions/upload-artifact@v7
         with:
-          name: banana-native-fortunes-weave-apk-phone-prepare
-          path: bn/android/app/out/*.apk
+          path: banana-native-fefw-*.apk
+          archive: false
           if-no-files-found: error
 
       - name: Logs (if something failed)
