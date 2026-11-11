@@ -60,9 +60,9 @@ jobs:
       - name: Name the APK with the commit
         run: |
           set -e
-          n=$(ls bn/android/app/out/*.apk | wc -l)
-          [ "$n" = 1 ] || { echo "expected one APK, found $n"; ls bn/android/app/out; exit 1; }
-          cp bn/android/app/out/*.apk "banana-native-fefw-${GITHUB_SHA::7}.apk"
+          set -- bn/android/app/out/*.apk
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected one APK, found $#: $*"; ls bn/android/app/out; exit 1; }
+          cp "$1" "banana-native-fefw-$(echo "$GITHUB_SHA" | cut -c1-7).apk"
 
       - name: The APK (a plain file, not a zip)
         uses: actions/upload-artifact@v7
