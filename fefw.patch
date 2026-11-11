@@ -31516,6 +31516,37 @@ index 0000000..1ef2cb0
 +    Final = vec4(outc, 1.0);
 +}
 \ No newline at end of file
+diff --git a/dm/gfx/vk_android/vka_dev.c b/dm/gfx/vk_android/vka_dev.c
+index ef2e0db..25e1091 100644
+--- a/dm/gfx/vk_android/vka_dev.c
++++ b/dm/gfx/vk_android/vka_dev.c
+@@ -265,6 +265,8 @@ int vka_init(void) {
+ }
+ int vka_ok(void) { return __atomic_load_n(&g_state, __ATOMIC_ACQUIRE) > 0; }
+ 
++// For the pace line: the time submissions waited for the queue lock, and held it (the queue submit and the sparse binds), and the present thread's time inside the lock (vka_present.c)
++_Atomic uint64_t vka_dbg_qlock_ns, vka_dbg_qsub_ns, vka_dbg_pres_ns, vka_dbg_pres_n;
+ VkResult vka_submit(VkCommandBuffer cb, uint64_t signal, uint32_t nwait, const VkSemaphore *wait, const uint64_t *wait_vals, const VkPipelineStageFlags *stages, VkSemaphore bin_signal) {
+     VkSemaphore sig[2]; uint64_t sv[2]; uint32_t ns = 0;
+     if (signal) { sig[ns] = V.tl; sv[ns++] = signal; }
+@@ -273,7 +275,9 @@ VkResult vka_submit(VkCommandBuffer cb, uint64_t signal, uint32_t nwait, const V
+     VkSemaphore ws[9]; uint64_t wv[9]; VkPipelineStageFlags wst[9];
+     if (nwait > 8) { VRED_ONCE("vka_submit: %u waits, at most 8 taken: the rest are dropped", nwait); nwait = 8; }
+     for (uint32_t i = 0; i < nwait; i++) { ws[i] = wait[i]; wv[i] = wait_vals[i]; wst[i] = stages[i]; }
++    uint64_t t_lock = now_ns();
+     pthread_mutex_lock(&V.qmu);
++    uint64_t t_got = now_ns();
+     vks_queue_locked(&nwait, ws, wv, wst);
+     VkTimelineSemaphoreSubmitInfo ti = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, .waitSemaphoreValueCount = nwait, .pWaitSemaphoreValues = wv, .signalSemaphoreValueCount = ns, .pSignalSemaphoreValues = sv};
+     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ti, .waitSemaphoreCount = nwait, .pWaitSemaphores = ws, .pWaitDstStageMask = wst,
+@@ -281,6 +285,7 @@ VkResult vka_submit(VkCommandBuffer cb, uint64_t signal, uint32_t nwait, const V
+     VkResult r = vka_hung() ? VK_ERROR_DEVICE_LOST : vk.vkQueueSubmit(V.q, 1, &si, VK_NULL_HANDLE);
+     if (!r && signal > V.tl_queued) __atomic_store_n(&V.tl_queued, signal, __ATOMIC_RELEASE);
+     pthread_mutex_unlock(&V.qmu);
++    atomic_fetch_add(&vka_dbg_qlock_ns, t_got - t_lock); atomic_fetch_add(&vka_dbg_qsub_ns, now_ns() - t_got);
+     return r;
+ }
+ // The queue idle, bounded by the hang time: the timeline up to the last value handed to it (the present's copies wait for no more), then vkQueueWaitIdle for the rest
 diff --git a/dm/gfx/vk_android/vka_exec.c b/dm/gfx/vk_android/vka_exec.c
 index b88aa95..7b33164 100644
 --- a/dm/gfx/vk_android/vka_exec.c
@@ -31584,7 +31615,7 @@ index b88aa95..7b33164 100644
      if (!s || !d) return;
      vka_tex_own(d, g_cb);
 diff --git a/dm/gfx/vk_android/vka_perf.c b/dm/gfx/vk_android/vka_perf.c
-index 269db6d..750aac9 100644
+index 269db6d..7ca1136 100644
 --- a/dm/gfx/vk_android/vka_perf.c
 +++ b/dm/gfx/vk_android/vka_perf.c
 @@ -189,7 +189,7 @@ static void pace_cpu(char *b, size_t n) {   // "now/cap" MHz of each cpufreq pol
@@ -31596,30 +31627,52 @@ index 269db6d..750aac9 100644
  int vka_rec_tid(void); int vka_enc_tid(void);
  static int pace_thr(int tid, vkpace_thr *o) {
      if (tid <= 0) return 0;
-@@ -201,8 +201,8 @@ static int pace_thr(int tid, vkpace_thr *o) {
+@@ -200,9 +200,11 @@ static int pace_thr(int tid, vkpace_thr *o) {
+     if (ok && (f = fopen(p, "re"))) { size_t k = fread(b, 1, sizeof b - 1, f); b[k] = 0; fclose(f); if (!vkpace_status(b, o)) o->vol = o->invol = 0; }
      return ok;
  }
++extern _Atomic uint64_t vka_dbg_qlock_ns, vka_dbg_qsub_ns, vka_dbg_pres_ns, vka_dbg_pres_n;
  static void pace_cost(uint64_t f, double nf, uint64_t draws, double rec_ms) {
 -    static int rtid, etid; static vkpace_thr r0, e0; static uint64_t b0, p0, c0;
 -    uint64_t bg, pr, cm; vka_exec_phases(&bg, &pr, &cm);
-+    static int rtid, etid; static vkpace_thr r0, e0; static uint64_t b0, p0, c0, ce0, cs0, ct0;
++    
++    static int rtid, etid; static vkpace_thr r0, e0; static uint64_t b0, p0, c0, ce0, cs0, ct0, ql0, qs0, pn0, pc0;
 +    uint64_t bg, pr, cm, ce, cs, ct; vka_exec_phases(&bg, &pr, &cm); vka_exec_commit_parts(&ce, &cs, &ct);
      int rt = vka_rec_tid(), et = vka_enc_tid(); vkpace_thr r1 = {0}, e1 = {0};
      int rok = pace_thr(rt, &r1), eok = pace_thr(et, &e1);
      int rfirst = rt != rtid, efirst = et != etid;   // (a new thread: its counters from the next window)
-@@ -214,9 +214,9 @@ static void pace_cost(uint64_t f, double nf, uint64_t draws, double rec_ms) {
+@@ -214,9 +216,12 @@ static void pace_cost(uint64_t f, double nf, uint64_t draws, double rec_ms) {
      else snprintf(rs, sizeof rs, "%s", rok ? "from the next line" : "not readable");
      if (eok && !efirst && nf) snprintf(es, sizeof es, "on a core %.1f ms, waited for a core %.1f ms, %.0f blocked / %.0f preempted switches", ed.run_ns / 1e6 / nf, ed.wait_ns / 1e6 / nf, ed.vol / nf, ed.invol / nf);
      else snprintf(es, sizeof es, "%s", eok ? "from the next line" : et ? "not readable" : "off");
 -    if (nf) VLOG("pace cost up to frame %llu, a frame: recording %.1f ms = draws %.1f + texture prepare %.1f + submission start %.1f + commit %.1f + other records %.1f; replay thread %s; encoder %s; "
 -                 "encoder calls ms (count): %s; %s", (unsigned long long)f, rec_ms, dms, pms, bms, cms, rec_ms - dms - pms - bms - cms, rs, es, ep[0] ? ep : "none", dp[0] ? dp : "no draws timed");
 -    rtid = rt; etid = et; if (rok) r0 = r1; if (eok) e0 = e1; b0 = bg; p0 = pr; c0 = cm;
++    uint64_t ql = atomic_load(&vka_dbg_qlock_ns), qs = atomic_load(&vka_dbg_qsub_ns), pn = atomic_load(&vka_dbg_pres_ns), pc = atomic_load(&vka_dbg_pres_n);
++    if (nf) VLOG("pace queue, a frame: waited for the queue lock %.1f ms, held it for the submit %.1f ms; the present thread held it %.1f ms a present (%.2f presents a frame)", (ql - ql0) / 1e6 / nf, (qs - qs0) / 1e6 / nf, pc > pc0 ? (pn - pn0) / 1e6 / (double)(pc - pc0) : 0.0, (pc - pc0) / nf);
++    ql0 = ql; qs0 = qs; pn0 = pn; pc0 = pc;
 +    if (nf) VLOG("pace cost up to frame %llu, a frame: recording %.1f ms = draws %.1f + texture prepare %.1f + submission start %.1f + commit %.1f (end of the command buffer %.1f, queue submit %.1f, upload flush and throttle %.1f) + other records %.1f; replay thread %s; encoder %s; "
 +                 "encoder calls ms (count): %s; %s", (unsigned long long)f, rec_ms, dms, pms, bms, cms, nf ? (ce - ce0) / 1e6 / nf : 0, nf ? (cs - cs0) / 1e6 / nf : 0, nf ? (ct - ct0) / 1e6 / nf : 0, rec_ms - dms - pms - bms - cms, rs, es, ep[0] ? ep : "none", dp[0] ? dp : "no draws timed");
 +    rtid = rt; etid = et; if (rok) r0 = r1; if (eok) e0 = e1; b0 = bg; p0 = pr; c0 = cm; ce0 = ce; cs0 = cs; ct0 = ct;
  }
  static void pace_tick(double period_s) {
      static vkpace P; static uint64_t sampled;
+diff --git a/dm/gfx/vk_android/vka_present.c b/dm/gfx/vk_android/vka_present.c
+index a417a9a..9ed73e8 100644
+--- a/dm/gfx/vk_android/vka_present.c
++++ b/dm/gfx/vk_android/vka_present.c
+@@ -778,9 +778,11 @@ static int present_one(const pq_item *it) {
+     { static int mode = -1, at; if (mode < 0) { const char *e = getenv("DM_VK_TEST_HANG"); mode = 0; if (e && sscanf(e, "%d,%d", &mode, &at) < 1) mode = 0; if (at <= 0) at = 600; }
+       if (mode && it->ticket == (uint64_t)at && it->fence) { wv[1] = mode == 1 ? vka_fence_last() + 1 : V.tl_queued + 1000000000ull;
+           VRED("DM_VK_TEST_HANG=%d: present ticket %llu waits for fence %llu (%llu handed to the queue)", mode, (unsigned long long)it->ticket, (unsigned long long)wv[1], (unsigned long long)V.tl_queued); } }
++    uint64_t tp0 = now_ns();
+     r = vka_hung() ? VK_ERROR_DEVICE_LOST : vk.vkQueueSubmit(V.q, 1, &si, g_fr[k].fence);
+     VkResult pr = r ? r : vk.vkQueuePresentKHR(V.q, &pi);
+     pthread_mutex_unlock(&V.qmu);
++    { extern _Atomic uint64_t vka_dbg_pres_ns, vka_dbg_pres_n; atomic_fetch_add(&vka_dbg_pres_ns, now_ns() - tp0); atomic_fetch_add(&vka_dbg_pres_n, 1); }
+     g_fr[k].held = im;
+     if (!r) vka_ctl_shot_done(g_fr[k].fence);
+     if (r) { static _Atomic int n; if (atomic_fetch_add(&n, 1) < 8) VRED("present submission %d", r); return 0; }
 diff --git a/dm/gfx/vk_android/vka_sgsr.c b/dm/gfx/vk_android/vka_sgsr.c
 new file mode 100644
 index 0000000..21197a8
