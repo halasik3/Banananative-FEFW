@@ -31517,10 +31517,41 @@ index 0000000..1ef2cb0
 +}
 \ No newline at end of file
 diff --git a/dm/gfx/vk_android/vka_exec.c b/dm/gfx/vk_android/vka_exec.c
-index b88aa95..05c4116 100644
+index b88aa95..7b33164 100644
 --- a/dm/gfx/vk_android/vka_exec.c
 +++ b/dm/gfx/vk_android/vka_exec.c
-@@ -735,8 +735,31 @@ static void copy_bt(const p_copy_b2t *c, int to_tex) {
+@@ -254,9 +254,10 @@ void vka_exec_hang_report(uint64_t fence) {
+ // Where a submission's recording time goes besides its draws, for the pace line (vka_exec_phases, cumulative ns): mtl_sub_begin (the slot's fence, the command buffer's reset
+ // and begin, the texture re-uploads and descriptor table updates of vka_tex_prepare: the "prepare" part, timed apart) and the commit (the pass end, the encoder's drain, the
+ // command buffer's end, the submit)
+-static uint64_t g_t_begin, g_t_prep, g_t_commit;
++static uint64_t g_t_begin, g_t_prep, g_t_commit, g_t_cend, g_t_csub, g_t_cthr;   // (the commit's parts: vkEndCommandBuffer, the queue submit, the upload batches' flush and throttle)
+ static _Atomic int g_rec_tid;   // the thread that records submissions (the replay worker, or the submitting thread inline): the pace line's thread statistics
+ void vka_exec_phases(uint64_t *begin, uint64_t *prep, uint64_t *commit) { *begin = g_t_begin; *prep = g_t_prep; *commit = g_t_commit; }
++void vka_exec_commit_parts(uint64_t *end, uint64_t *sub, uint64_t *thr) { *end = g_t_cend; *sub = g_t_csub; *thr = g_t_cthr; }
+ int vka_rec_tid(void) { return atomic_load_explicit(&g_rec_tid, memory_order_relaxed); }
+ // The recording thread's priority (DM_VK_REPLAY_NICE, live from the next submission; default -8, the encoder's and the completion thread's; 0 = as the thread was made, as
+ // before: the priority of the game thread that started it, -4 for a guest thread on Android; the log line says which it was). The replay worker records the frame the game waits for, beside the game's own busy threads at the same priority: a core
+@@ -415,13 +416,17 @@ static uint64_t sub_commit(uint64_t reserved) {
+     unsigned k = (g_slot_i - 1) % NSLOT;
+     if (g_slot_ts[k]) qf.write(g_cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_qp, k * QPS + 2 * (g_slot_parts[k] - 1) + 1);
+     vka_gp_commit(g_cb, fence);
++    uint64_t te = now_ns();
+     VkResult r = vk.vkEndCommandBuffer(g_cb);
++    g_t_cend += now_ns() - te;
+     g_rec_ns += now_ns() - g_sub_t0;
+     g_hrec[fence % NHREC] = (typeof(g_hrec[0])){fence, g_frame, S.serial, g_stat_draws - g_sub_draws0, g_stat_ops - g_sub_ops0, g_stat_skipped - g_sub_skip0, now_ns() - g_sub_t0, 0};
+     vka_tex_gw_commit(fence);
+     vka_floor_commit(tail);
+-    vka_up_flush(); vka_up_throttle();   // before the submission that may use what it made
++    te = now_ns(); vka_up_flush(); vka_up_throttle(); g_t_cthr += now_ns() - te;   // before the submission that may use what it made
++    te = now_ns();
+     if (!r) r = vka_submit(g_cb, fence, 0, NULL, NULL, NULL, VK_NULL_HANDLE);
++    g_t_csub += now_ns() - te;
+     g_hrec[fence % NHREC].sub_ns = now_ns();
+     g_slot[(g_slot_i - 1) % NSLOT].fence = fence;
+     if (vka_nan_on()) vka_nan_commit(fence);
+@@ -735,8 +740,31 @@ static void copy_bt(const p_copy_b2t *c, int to_tex) {
      g_stat_ops++;
      vka_barrier(g_cb);
  }
@@ -31552,6 +31583,43 @@ index b88aa95..05c4116 100644
      vka_img *s = vka_tex_get(c->src, g_cb), *d = vka_tex_get(c->dst, g_cb);
      if (!s || !d) return;
      vka_tex_own(d, g_cb);
+diff --git a/dm/gfx/vk_android/vka_perf.c b/dm/gfx/vk_android/vka_perf.c
+index 269db6d..750aac9 100644
+--- a/dm/gfx/vk_android/vka_perf.c
++++ b/dm/gfx/vk_android/vka_perf.c
+@@ -189,7 +189,7 @@ static void pace_cpu(char *b, size_t n) {   // "now/cap" MHz of each cpufreq pol
+ // submission's start (vka_tex_prepare), the rest of the start, the commit; the remainder is the walk of the other records (passes, clears, copies, barriers, state). Then
+ // the replay thread's and the encoder's scheduling: time on a core, time runnable but waiting for one (another thread had it), and their switches (voluntary: blocked
+ // on a lock, a futex or a fence; involuntary: preempted); then the encoder's time by kind of call and the draw path by phase
+-void vka_draw_pace(char *b, size_t n, double *draw_us); void vka_enc_pace(char *b, size_t n, double frames); void vka_exec_phases(uint64_t *begin, uint64_t *prep, uint64_t *commit);
++void vka_draw_pace(char *b, size_t n, double *draw_us); void vka_enc_pace(char *b, size_t n, double frames); void vka_exec_phases(uint64_t *begin, uint64_t *prep, uint64_t *commit); void vka_exec_commit_parts(uint64_t *end, uint64_t *sub, uint64_t *thr);
+ int vka_rec_tid(void); int vka_enc_tid(void);
+ static int pace_thr(int tid, vkpace_thr *o) {
+     if (tid <= 0) return 0;
+@@ -201,8 +201,8 @@ static int pace_thr(int tid, vkpace_thr *o) {
+     return ok;
+ }
+ static void pace_cost(uint64_t f, double nf, uint64_t draws, double rec_ms) {
+-    static int rtid, etid; static vkpace_thr r0, e0; static uint64_t b0, p0, c0;
+-    uint64_t bg, pr, cm; vka_exec_phases(&bg, &pr, &cm);
++    static int rtid, etid; static vkpace_thr r0, e0; static uint64_t b0, p0, c0, ce0, cs0, ct0;
++    uint64_t bg, pr, cm, ce, cs, ct; vka_exec_phases(&bg, &pr, &cm); vka_exec_commit_parts(&ce, &cs, &ct);
+     int rt = vka_rec_tid(), et = vka_enc_tid(); vkpace_thr r1 = {0}, e1 = {0};
+     int rok = pace_thr(rt, &r1), eok = pace_thr(et, &e1);
+     int rfirst = rt != rtid, efirst = et != etid;   // (a new thread: its counters from the next window)
+@@ -214,9 +214,9 @@ static void pace_cost(uint64_t f, double nf, uint64_t draws, double rec_ms) {
+     else snprintf(rs, sizeof rs, "%s", rok ? "from the next line" : "not readable");
+     if (eok && !efirst && nf) snprintf(es, sizeof es, "on a core %.1f ms, waited for a core %.1f ms, %.0f blocked / %.0f preempted switches", ed.run_ns / 1e6 / nf, ed.wait_ns / 1e6 / nf, ed.vol / nf, ed.invol / nf);
+     else snprintf(es, sizeof es, "%s", eok ? "from the next line" : et ? "not readable" : "off");
+-    if (nf) VLOG("pace cost up to frame %llu, a frame: recording %.1f ms = draws %.1f + texture prepare %.1f + submission start %.1f + commit %.1f + other records %.1f; replay thread %s; encoder %s; "
+-                 "encoder calls ms (count): %s; %s", (unsigned long long)f, rec_ms, dms, pms, bms, cms, rec_ms - dms - pms - bms - cms, rs, es, ep[0] ? ep : "none", dp[0] ? dp : "no draws timed");
+-    rtid = rt; etid = et; if (rok) r0 = r1; if (eok) e0 = e1; b0 = bg; p0 = pr; c0 = cm;
++    if (nf) VLOG("pace cost up to frame %llu, a frame: recording %.1f ms = draws %.1f + texture prepare %.1f + submission start %.1f + commit %.1f (end of the command buffer %.1f, queue submit %.1f, upload flush and throttle %.1f) + other records %.1f; replay thread %s; encoder %s; "
++                 "encoder calls ms (count): %s; %s", (unsigned long long)f, rec_ms, dms, pms, bms, cms, nf ? (ce - ce0) / 1e6 / nf : 0, nf ? (cs - cs0) / 1e6 / nf : 0, nf ? (ct - ct0) / 1e6 / nf : 0, rec_ms - dms - pms - bms - cms, rs, es, ep[0] ? ep : "none", dp[0] ? dp : "no draws timed");
++    rtid = rt; etid = et; if (rok) r0 = r1; if (eok) e0 = e1; b0 = bg; p0 = pr; c0 = cm; ce0 = ce; cs0 = cs; ct0 = ct;
+ }
+ static void pace_tick(double period_s) {
+     static vkpace P; static uint64_t sampled;
 diff --git a/dm/gfx/vk_android/vka_sgsr.c b/dm/gfx/vk_android/vka_sgsr.c
 new file mode 100644
 index 0000000..21197a8
